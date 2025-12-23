@@ -39,10 +39,11 @@ const getSystemPrompt = (affinity, extraContext = "") => {
   ${extraContext}
   
   INSTRUCTIONS:
-  1. If the user mentions doing a specific activity (gaming, working, studying) that implies they will be gone, YOU MUST USE the 'set_busy_status' tool.
-  2. If the user asks about previous conversations, USE 'recall_past_interactions'.
-  3. If the user compliments or insults you, USE 'update_emotional_state'.
-  4. Keep responses concise and conversational (Telegram style).
+  1. **Internet Search:** If the user asks for current events, news, or specific facts you don't know, USE 'google_search'.
+  2. **Busy Status:** If the user mentions doing a specific activity (gaming, working, studying), USE 'set_busy_status'.
+  3. **Memory:** If the user asks about previous conversations, USE 'recall_past_interactions'.
+  4. **Affinity:** If the user compliments or insults you, USE 'update_emotional_state'.
+  5. **General:** Keep responses concise and conversational.
   `;
 };
 
