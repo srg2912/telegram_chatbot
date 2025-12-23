@@ -5,21 +5,56 @@ const Groq = require('groq-sdk');
 const DB = require('./database');
 const { toolsDefinition, availableTools } = require('./tools');
 
-// Initialize API Clients
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Load Personality File synchronously at startup
+// Load Personality
 let personalityText = "";
 try {
   personalityText = fs.readFileSync('./personality.txt', 'utf8');
 } catch (err) {
-  console.error("Warning: personality.txt not found. Using default.");
   personalityText = "You are a helpful assistant named Nano.";
 }
 
 /**
- * Generates the System Prompt based on current state
+ * NEW FUNCTION: Checks for Holidays & Birthdays
+ * Returns a string with instructions if today is special.
+ */
+const getSpecialEventContext = () => {
+  const now = new Date();
+  // Format today as MM-DD
+  const today = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  
+  const userBday = process.env.USER_BIRTHDAY || "";
+  const botBday = process.env.BOT_BIRTHDAY || "";
+
+  // 1. Check Birthdays
+  if (today === userBday) {
+    return "IMPORTANT: Today is the USER'S BIRTHDAY! 🎉 You must be extra nice, celebrate them, and wish them a happy birthday.";
+  }
+  if (today === botBday) {
+    return "IMPORTANT: Today is YOUR (Nano's) BIRTHDAY! 🎂 Act excited, mention it, and see if the user remembers.";
+  }
+
+  // 2. Check Static Holidays
+  const holidays = {
+    "12-24": "Christmas Eve. Wish the user a cozy evening.",
+    "12-25": "Christmas Day. Wish the user a Merry Christmas!",
+    "12-31": "New Year's Eve. Discuss plans for the new year.",
+    "01-01": "New Year's Day. Wish the user a Happy New Year!",
+    "02-14": "Valentine's Day. If affinity is high, be sweet. If low, be cynical about it.",
+    "10-31": "Halloween. Get spooky!",
+  };
+
+  if (holidays[today]) {
+    return `DATE CONTEXT: Today is ${holidays[today]}`;
+  }
+
+  return ""; // No special event
+};
+
+/**
+ * UPDATED: System Prompt includes Special Events
  */
 const getSystemPrompt = (affinity, extraContext = "") => {
   let tone = "neutral";
@@ -28,31 +63,36 @@ const getSystemPrompt = (affinity, extraContext = "") => {
   else if (affinity < -50) tone = "hostile, short, and annoyed";
   else if (affinity < -10) tone = "cold and distant";
 
+  // Get date context
+  const eventContext = getSpecialEventContext();
+
   return `
   ${personalityText}
 
   CURRENT STATUS:
   - Affinity Level: ${affinity} (Range: -100 to 100).
   - Current Tone: ${tone}.
+  - Date: ${new Date().toDateString()}.
+  
+  SPECIAL EVENT:
+  ${eventContext}
   
   CONTEXT NOTES:
   ${extraContext}
   
   INSTRUCTIONS:
-  1. **Internet Search:** If the user asks for current events, news, or specific facts you don't know, USE 'google_search'.
-  2. **Busy Status:** If the user mentions doing a specific activity (gaming, working, studying), USE 'set_busy_status'.
-  3. **Memory:** If the user asks about previous conversations, USE 'recall_past_interactions'.
-  4. **Affinity:** If the user compliments or insults you, USE 'update_emotional_state'.
-  5. **General:** Keep responses concise and conversational.
+  1. **Internet Search:** Use 'google_search' for unknown facts/news.
+  2. **Busy Status:** Use 'set_busy_status' if user is going away.
+  3. **Memory:** Use 'recall_past_interactions' for past topics.
+  4. **Affinity:** Use 'update_emotional_state' for compliments/insults.
+  5. **Events:** If a Special Event is listed above, acknowledge it naturally (unless you already have in recent history).
   `;
 };
 
-/**
- * Helper: Orchestrates Groq calls, Tool execution, and Telegram sending
- */
+// ... (Rest of the code remains the same: generateResponse, bot.on, setInterval) ...
+
 async function generateResponse(messages, chatId) {
   try {
-    // 1. First Call to Groq
     const completion = await groq.chat.completions.create({
       messages: messages,
       model: "llama3-70b-8192",
@@ -63,20 +103,13 @@ async function generateResponse(messages, chatId) {
     const responseMessage = completion.choices[0].message;
     let finalContent = responseMessage.content;
 
-    // 2. Handle Tool Calls if any
     if (responseMessage.tool_calls) {
-      messages.push(responseMessage); // Add the intent to history
-
+      messages.push(responseMessage);
       for (const toolCall of responseMessage.tool_calls) {
         const fnName = toolCall.function.name;
         const fnArgs = JSON.parse(toolCall.function.arguments);
-        
-        console.log(`[Tool Executed] ${fnName} with args:`, fnArgs);
-        
-        // Execute the local function
+        console.log(`[Tool Executed] ${fnName}`);
         const toolOutput = await availableTools[fnName](fnArgs);
-
-        // Append result to history
         messages.push({
           tool_call_id: toolCall.id,
           role: "tool",
@@ -84,59 +117,44 @@ async function generateResponse(messages, chatId) {
           content: toolOutput,
         });
       }
-
-      // 3. Second Call to Groq (to generate text based on tool output)
       const secondResponse = await groq.chat.completions.create({
         messages: messages,
         model: "llama3-70b-8192",
       });
-      
       finalContent = secondResponse.choices[0].message.content;
     }
 
-    // 4. Send to Telegram and Save to DB
     if (finalContent) {
       await bot.telegram.sendMessage(chatId, finalContent);
       await DB.addMessage('assistant', finalContent);
     }
-
   } catch (error) {
-    console.error("Generation Error:", error);
-    // Optional: send an error message to user, or just stay silent
+    console.error("Gen Error:", error);
   }
 }
 
-/**
- * EVENT: User sends a message
- */
 bot.on('text', async (ctx) => {
   const userMessage = ctx.message.text;
   const chatId = ctx.chat.id;
 
-  // 1. Update User State
   DB.setChatId(chatId);
-  DB.updateStreak(0); // Reset autonomous streak (user is back)
-  await DB.setBusyUntil(null); // Clear busy status (user is back)
+  DB.updateStreak(0); 
+  await DB.setBusyUntil(null); 
 
-  // 2. Sleep Detection Logic
   const lastMsg = await DB.getLastMessage();
   let sleepContext = "";
   
   if (lastMsg) {
-    const lastDate = new Date(lastMsg.timestamp + "Z"); // Treat as UTC
+    const lastDate = new Date(lastMsg.timestamp + "Z");
     const now = new Date();
     const hoursDiff = (now - lastDate) / (1000 * 60 * 60);
-    
-    // If > 6 hours silence and it is now Daytime (10am+), assume they slept
     if (hoursDiff > 6 && now.getHours() >= 10) {
-      sleepContext = "NOTE: The user just replied after a long silence (likely sleep). Acknowledge that they are back/awake.";
+      sleepContext = "NOTE: User replied after a long silence (likely sleep).";
     }
   }
 
-  // 3. Save User Message
   await DB.addMessage('user', userMessage);
 
-  // 4. Prepare Context
   const recentHistory = await DB.getRecentHistory();
   const userStats = await DB.getAffinity();
 
@@ -145,75 +163,47 @@ bot.on('text', async (ctx) => {
     ...recentHistory.map(m => ({ role: m.role, content: m.content }))
   ];
 
-  // 5. Generate
   await generateResponse(messages, chatId);
 });
 
-/**
- * AUTONOMOUS LOOP: Runs every 60 seconds
- */
 setInterval(async () => {
   const now = new Date();
   const currentHour = now.getHours();
 
-  // 1. QUIET HOURS (00:00 to 10:00)
-  // Bot does not initiate conversation during these hours
-  if (currentHour >= 0 && currentHour < 10) {
-    return;
-  }
+  if (currentHour >= 0 && currentHour < 10) return;
 
-  // 2. GET STATE
   const lastMsg = await DB.getLastMessage();
   const stats = await DB.getAffinity();
-
-  // If we don't know who to talk to, or history is empty, do nothing
+  
   if (!lastMsg || !stats.chat_id) return;
+  if (stats.busy_until && now < new Date(stats.busy_until)) return;
 
-  // 3. BUSY STATUS CHECK
-  if (stats.busy_until) {
-    const busyTime = new Date(stats.busy_until);
-    // If current time is strictly less than busy_until, we wait
-    if (now < busyTime) {
-      return; 
-    }
-    // Note: If now > busyTime, we proceed (busy time expired)
-  }
-
-  // 4. CHECK LAST MESSAGE AUTHOR
-  // We only proactively message if the LAST message was from US (Assistant)
-  // meaning the user hasn't replied yet.
   if (lastMsg.role === 'assistant') {
     const lastMsgTime = new Date(lastMsg.timestamp + "Z");
     const diffMinutes = (now - lastMsgTime) / (1000 * 60);
 
-    // 5. TIMING LOGIC (10 Minute Rule)
     if (diffMinutes >= 10) {
-      
-      // Streak Logic (Max 3 autonomous messages)
       if (stats.msg_streak >= 3) {
-        // EXCEPTION: Morning Reset
-        // If it's been > 8 hours (480 mins) since last message, user probably slept.
-        // We allow a "Good Morning" message even if streak was maxed last night.
-        if (diffMinutes > 480) {
-           await DB.updateStreak(0); // Reset streak for the new day
-        } else {
-           return; // Limit reached, stay silent
-        }
+        if (diffMinutes > 480) await DB.updateStreak(0); 
+        else return; 
       }
 
-      // 6. DETERMINE PROMPT CONTEXT
+      // Check for special event string to influence the autonomous prompt
+      const eventContext = getSpecialEventContext();
       let autonomyPrompt = "The user hasn't replied in over 10 minutes.";
       
-      // If significant time passed (morning scenario)
       if (currentHour >= 10 && diffMinutes > 400) {
-        autonomyPrompt = "It is now past 10 AM. The user hasn't spoken since last night. Send a gentle morning greeting.";
+        autonomyPrompt = "It is now past 10 AM. Send a morning greeting.";
+        // If today is a special event, prioritize that!
+        if (eventContext) {
+           autonomyPrompt += " AND MENTION THE SPECIAL EVENT/DATE!";
+        }
       } else {
-        autonomyPrompt += " Send a short message checking in, or changing the topic slightly. Do not be annoying.";
+        autonomyPrompt += " Check in nicely.";
       }
 
-      console.log(`[Autonomous] Triggering message. Streak: ${stats.msg_streak + 1}`);
+      console.log(`[Autonomous] Triggering. Streak: ${stats.msg_streak + 1}`);
 
-      // 7. PREPARE & SEND
       const recentHistory = await DB.getRecentHistory();
       const messages = [
         { role: "system", content: getSystemPrompt(stats.affinity, autonomyPrompt) },
@@ -221,20 +211,11 @@ setInterval(async () => {
       ];
 
       await generateResponse(messages, stats.chat_id);
-      
-      // Increment streak
       DB.updateStreak(stats.msg_streak + 1);
     }
   }
+}, 60 * 1000);
 
-}, 60 * 1000); // Check every 60 seconds
-
-// Start Bot
-console.log("Nano is initializing...");
-bot.launch().then(() => {
-  console.log("Nano is online and listening.");
-}).catch(err => console.error("Failed to launch bot:", err));
-
-// Graceful Stop
+bot.launch().then(() => console.log("Nano Online 🟢"));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
