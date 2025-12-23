@@ -1,0 +1,20 @@
+# Ignore all secrets
+.env
+
+# Ignore Node.js dependencies (shouldn't be in Git)
+node_modules/
+
+# Ignore SQLite database (only for production, but safe to ignore)
+memory.db
+
+# Ignore logs (if you create any)
+*.log
+
+# Ignore npm cache (optional but safe)
+npm-debug.log
+
+# Ignore build artifacts (if any)
+build/
+dist/
+
+personality.txt
