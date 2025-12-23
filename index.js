@@ -7,6 +7,7 @@ const { toolsDefinition, availableTools } = require('./tools');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const model = process.env.MODEL || "";
 
 // Load Personality
 let personalityText = "";
@@ -95,7 +96,7 @@ async function generateResponse(messages, chatId) {
   try {
     const completion = await groq.chat.completions.create({
       messages: messages,
-      model: "llama3-70b-8192",
+      model: model,
       tools: toolsDefinition,
       tool_choice: "auto",
     });
@@ -119,7 +120,7 @@ async function generateResponse(messages, chatId) {
       }
       const secondResponse = await groq.chat.completions.create({
         messages: messages,
-        model: "llama3-70b-8192",
+        model: model,
       });
       finalContent = secondResponse.choices[0].message.content;
     }
