@@ -2,7 +2,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./nano.db');
 
-// Initialize Tables
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -11,23 +10,25 @@ db.serialize(() => {
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
-  // Added 'chat_id' and 'msg_streak'
+  // Added 'busy_until' column
   db.run(`CREATE TABLE IF NOT EXISTS user_stats (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     affinity INTEGER DEFAULT 10,
     daily_changes INTEGER DEFAULT 0,
     last_update_date TEXT,
     chat_id TEXT, 
-    msg_streak INTEGER DEFAULT 0
+    msg_streak INTEGER DEFAULT 0,
+    busy_until TEXT 
   )`);
   
-  db.run(`INSERT OR IGNORE INTO user_stats (id, affinity, daily_changes, last_update_date, msg_streak) VALUES (1, 10, 0, date('now'), 0)`);
+  db.run(`INSERT OR IGNORE INTO user_stats (id, affinity, daily_changes, last_update_date, msg_streak, busy_until) VALUES (1, 10, 0, date('now'), 0, NULL)`);
 });
 
 const getTodayDate = () => new Date().toISOString().split('T')[0];
 
 module.exports = {
-  // --- EXISTING FUNCTIONS ---
+  // ... (Previous functions: addMessage, getRecentHistory, searchMemory, getAffinity stay the same) ...
+
   addMessage: (role, content) => {
     return new Promise((resolve, reject) => {
       db.run('INSERT INTO messages (role, content) VALUES (?, ?)', [role, content], (err) => {
@@ -37,9 +38,8 @@ module.exports = {
   },
   getRecentHistory: () => {
     return new Promise((resolve, reject) => {
-      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 30', (err, rows) => { // Added timestamp fetch
-        if (err) reject(err);
-        else resolve(rows.reverse()); 
+      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 30', (err, rows) => { 
+        if (err) reject(err); else resolve(rows.reverse()); 
       });
     });
   },
@@ -81,15 +81,9 @@ module.exports = {
       );
     });
   },
-
-  // --- NEW FUNCTIONS FOR AUTONOMY ---
-
-  // Save the Chat ID so we can message the user later
   setChatId: (chatId) => {
     db.run('UPDATE user_stats SET chat_id = ? WHERE id = 1', [chatId]);
   },
-
-  // Get the last message to check time and author
   getLastMessage: () => {
     return new Promise((resolve, reject) => {
       db.get('SELECT * FROM messages ORDER BY id DESC LIMIT 1', (err, row) => {
@@ -97,9 +91,16 @@ module.exports = {
       });
     });
   },
-
-  // Update how many times bot has autonomously messaged
   updateStreak: (streak) => {
     db.run('UPDATE user_stats SET msg_streak = ? WHERE id = 1', [streak]);
+  },
+
+  // --- NEW FUNCTION ---
+  setBusyUntil: (isoTimestamp) => {
+    return new Promise((resolve, reject) => {
+      db.run('UPDATE user_stats SET busy_until = ? WHERE id = 1', [isoTimestamp], (err) => {
+         if (err) reject(err); else resolve();
+      });
+    });
   }
 };
