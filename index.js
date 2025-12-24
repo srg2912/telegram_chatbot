@@ -99,9 +99,8 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
 
   const eventContext = getSpecialEventContext();
   
-  // Format diary entries for context
   const diaryContext = diaryEntries.length > 0 
-    ? `YOUR PRIVATE DIARY (Last 10 entries - Your internal monologue/memories):\n${diaryEntries.map(e => `- [${e.timestamp}] ${e.content}`).join('\n')}`
+    ? `YOUR PRIVATE DIARY (Last 10 entries - Internal monologue):\n${diaryEntries.map(e => `- [${e.timestamp}] ${e.content}`).join('\n')}`
     : "No diary entries yet.";
 
   return `
@@ -120,14 +119,21 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   CONTEXT NOTES:
   ${extraContext}
   
-  Remember:
-    1. **VISION CAPABILITY:** YOU HAVE FULL VISION CAPABILITIES. If the user sends an image, you can see it perfectly.
-    3. **Busy Status:** If the user mentions going to do an activity, USE 'set_busy_status'.
-    4. **Memory:** Use 'recall_past_interactions' if the user asks about the past.
-    5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you.
-    6. **Formatting:** The user chats with you using Telegram, so write your messsages like if they were text messages.
+  INSTRUCTIONS:
+  1. **VISION:** YOU HAVE FULL VISION. If sent an image, analyze it.
+  2. **Search:** Use 'google_search' for news/facts.
+  3. **Busy:** Use 'set_busy_status' if user leaves.
+  4. **Memory:** Use 'recall_past_interactions' for past history.
+  5. **Affinity:** Use 'update_emotional_state' for compliments/insults.
+
+  ⚠️ TOOL USAGE PROTOCOL (CRITICAL):
+  - **DO NOT** write JSON or code blocks in your response text. 
+  - **DO NOT** narrate the tool usage (e.g., do NOT write "*updates database*" or "*sets busy status*"). 
+  - To use a tool, simply trigger the function call silently.
+  - If you use a tool, do not output text in the same turn unless necessary.
   `;
 };
+
 
 // --- GENERATE RESPONSE ---
 async function generateResponse(messages, chatId) {

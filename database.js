@@ -47,7 +47,7 @@ module.exports = {
   },
   getRecentHistory: () => {
     return new Promise((resolve, reject) => {
-      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 30', (err, rows) => { 
+      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 20', (err, rows) => { 
         if (err) reject(err); else resolve(rows.reverse()); 
       });
     });
