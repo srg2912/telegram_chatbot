@@ -3,6 +3,7 @@ const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./nano.db');
 
 db.serialize(() => {
+  // Messages Table
   db.run(`CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT,
@@ -10,7 +11,14 @@ db.serialize(() => {
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
-  // Added 'busy_until' column
+  // Diary Table (NEW)
+  db.run(`CREATE TABLE IF NOT EXISTS diary_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // User Stats (Updated with interaction_count)
   db.run(`CREATE TABLE IF NOT EXISTS user_stats (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     affinity INTEGER DEFAULT 10,
@@ -18,17 +26,18 @@ db.serialize(() => {
     last_update_date TEXT,
     chat_id TEXT, 
     msg_streak INTEGER DEFAULT 0,
-    busy_until TEXT 
+    busy_until TEXT,
+    interaction_count INTEGER DEFAULT 0 
   )`);
   
-  db.run(`INSERT OR IGNORE INTO user_stats (id, affinity, daily_changes, last_update_date, msg_streak, busy_until) VALUES (1, 10, 0, date('now'), 0, NULL)`);
+  db.run(`INSERT OR IGNORE INTO user_stats (id, affinity, daily_changes, last_update_date, msg_streak, busy_until, interaction_count) VALUES (1, 10, 0, date('now'), 0, NULL, 0)`);
 });
 
 const getTodayDate = () => new Date().toISOString().split('T')[0];
 
 module.exports = {
-  // ... (Previous functions: addMessage, getRecentHistory, searchMemory, getAffinity stay the same) ...
-
+  // ... (Existing functions: addMessage, getRecentHistory, searchMemory, setChatId, getLastMessage, updateStreak, setBusyUntil stay the same) ...
+  
   addMessage: (role, content) => {
     return new Promise((resolve, reject) => {
       db.run('INSERT INTO messages (role, content) VALUES (?, ?)', [role, content], (err) => {
@@ -94,12 +103,34 @@ module.exports = {
   updateStreak: (streak) => {
     db.run('UPDATE user_stats SET msg_streak = ? WHERE id = 1', [streak]);
   },
-
-  // --- NEW FUNCTION ---
   setBusyUntil: (isoTimestamp) => {
     return new Promise((resolve, reject) => {
       db.run('UPDATE user_stats SET busy_until = ? WHERE id = 1', [isoTimestamp], (err) => {
          if (err) reject(err); else resolve();
+      });
+    });
+  },
+
+  // --- NEW DIARY FUNCTIONS ---
+
+  incrementInteractionCount: () => {
+    db.run('UPDATE user_stats SET interaction_count = interaction_count + 1 WHERE id = 1');
+  },
+
+  resetInteractionCount: () => {
+    db.run('UPDATE user_stats SET interaction_count = 0 WHERE id = 1');
+  },
+
+  addDiaryEntry: (content) => {
+    db.run('INSERT INTO diary_entries (content) VALUES (?)', [content]);
+  },
+
+  getRecentDiaryEntries: () => {
+    return new Promise((resolve, reject) => {
+      // Get last 10 entries
+      db.all('SELECT content, timestamp FROM diary_entries ORDER BY id DESC LIMIT 10', (err, rows) => {
+        if (err) reject(err); 
+        else resolve(rows.reverse()); // Oldest to newest
       });
     });
   }

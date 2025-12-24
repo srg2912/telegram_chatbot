@@ -5,21 +5,20 @@ const Groq = require('groq-sdk');
 const DB = require('./database');
 const { toolsDefinition, availableTools } = require('./tools');
 
-// --- INITIALIZATION ---
+// --- SETUP ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL_ID = process.env.GROQ_MODEL || "llama-3.2-11b-vision-preview";
 
-// --- LOAD PERSONALITY ---
+// Load Personality
 let personalityText = "";
 try {
   personalityText = fs.readFileSync('./personality.txt', 'utf8');
 } catch (err) {
-  console.error("Warning: personality.txt not found. Using default.");
   personalityText = "You are a helpful assistant named Nano.";
 }
 
-// --- HELPER: CHECK DATES & HOLIDAYS ---
+// --- HELPER: SPECIAL DATES ---
 const getSpecialEventContext = () => {
   const now = new Date();
   const today = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -27,24 +26,71 @@ const getSpecialEventContext = () => {
   const userBday = process.env.USER_BIRTHDAY || "";
   const botBday = process.env.BOT_BIRTHDAY || "";
 
-  if (today === userBday) return "IMPORTANT: Today is the USER'S BIRTHDAY! 🎉 Celebrate them!";
-  if (today === botBday) return "IMPORTANT: Today is YOUR (Nano's) BIRTHDAY! 🎂 Act excited!";
+  if (today === userBday) return "IMPORTANT: Today is the USER'S BIRTHDAY! 🎉";
+  if (today === botBday) return "IMPORTANT: Today is YOUR (Nano's) BIRTHDAY! 🎂";
 
   const holidays = {
-    "12-24": "Christmas Eve. Wish the user a cozy evening.",
-    "12-25": "Christmas Day. Wish the user a Merry Christmas!",
-    "12-31": "New Year's Eve. Discuss plans for the new year.",
-    "01-01": "New Year's Day. Wish the user a Happy New Year!",
+    "12-24": "Christmas Eve.",
+    "12-25": "Christmas Day.",
+    "12-31": "New Year's Eve.",
+    "01-01": "New Year's Day.",
     "02-14": "Valentine's Day.",
-    "10-31": "Halloween. Get spooky!",
+    "10-31": "Halloween.",
   };
-
   if (holidays[today]) return `DATE CONTEXT: Today is ${holidays[today]}`;
   return "";
 };
 
-// --- HELPER: SYSTEM PROMPT GENERATOR ---
-const getSystemPrompt = (affinity, extraContext = "") => {
+// --- HELPER: DIARY GENERATOR ---
+// This runs in the background when interaction count hits 20
+async function writeDiaryEntry(affinity) {
+  console.log("[Diary] Writing new entry...");
+  const recentHistory = await DB.getRecentHistory(); // Get context
+  
+  // Format history for the summarizer
+  const conversationText = recentHistory.map(m => `${m.role}: ${m.content}`).join('\n');
+
+  const diaryPrompt = [
+    {
+      role: "system",
+      content: `You are Nano. You are writing in your private diary.
+      
+      Personality: ${personalityText}
+      Current Affinity with User: ${affinity}.
+      
+      Task: Write a SHORT, subjective diary entry (2-3 sentences) about your recent interactions with the user.
+      - Be honest about how you feel.
+      - Are you annoyed? Happy? Bored?
+      - Mention specific things the user said.
+      - Do NOT address the user. This is for YOU only.`
+    },
+    {
+      role: "user",
+      content: `Here is the recent conversation logs:\n\n${conversationText}\n\nDear Diary,`
+    }
+  ];
+
+  try {
+    const completion = await groq.chat.completions.create({
+      messages: diaryPrompt,
+      model: "llama3-8b-8192", // Use a smaller/cheaper model for internal thought
+      temperature: 0.7,
+    });
+
+    const entry = completion.choices[0].message.content;
+    if (entry) {
+      DB.addDiaryEntry(entry);
+      DB.resetInteractionCount();
+      console.log(`[Diary] Saved: "${entry}"`);
+    }
+  } catch (err) {
+    console.error("[Diary] Failed to write:", err);
+  }
+}
+
+// --- UPDATED SYSTEM PROMPT ---
+// Now accepts 'diaryEntries' as an argument
+const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   let tone = "neutral";
   if (affinity > 50) tone = "loving, enthusiastic, and affectionate";
   else if (affinity > 20) tone = "warm and friendly";
@@ -52,33 +98,40 @@ const getSystemPrompt = (affinity, extraContext = "") => {
   else if (affinity < -10) tone = "cold and distant";
 
   const eventContext = getSpecialEventContext();
+  
+  // Format diary entries for context
+  const diaryContext = diaryEntries.length > 0 
+    ? `YOUR PRIVATE DIARY (Last 10 entries - Your internal monologue/memories):\n${diaryEntries.map(e => `- [${e.timestamp}] ${e.content}`).join('\n')}`
+    : "No diary entries yet.";
 
   return `
   ${personalityText}
 
   CURRENT STATUS:
-  - Affinity Level: ${affinity} (Range: -100 to 100).
-  - Current Tone: ${tone}.
+  - Affinity: ${affinity} (-100 to 100).
+  - Tone: ${tone}.
   - Date: ${new Date().toDateString()}.
   
+  ${diaryContext}
+
   SPECIAL EVENTS:
   ${eventContext}
   
   CONTEXT NOTES:
   ${extraContext}
   
-  INSTRUCTIONS:
-  1. **VISION CAPABILITY:** YOU HAVE FULL VISION CAPABILITIES. If the user sends an image, you can see it perfectly.
-  3. **Busy Status:** If the user mentions going to do an activity, USE 'set_busy_status'.
-  4. **Memory:** Use 'recall_past_interactions' if the user asks about the past.
-  5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you.
+  Remember:
+    1. **VISION CAPABILITY:** YOU HAVE FULL VISION CAPABILITIES. If the user sends an image, you can see it perfectly.
+    3. **Busy Status:** If the user mentions going to do an activity, USE 'set_busy_status'.
+    4. **Memory:** Use 'recall_past_interactions' if the user asks about the past.
+    5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you.
+    6. **Formatting:** The user chats with you using Telegram, so write your messsages like if they were text messages.
   `;
 };
 
-// --- CORE: GENERATE RESPONSE & HANDLE TOOLS ---
+// --- GENERATE RESPONSE ---
 async function generateResponse(messages, chatId) {
   try {
-    // 1. First Call to Groq
     const completion = await groq.chat.completions.create({
       messages: messages,
       model: MODEL_ID,
@@ -89,18 +142,13 @@ async function generateResponse(messages, chatId) {
     const responseMessage = completion.choices[0].message;
     let finalContent = responseMessage.content;
 
-    // 2. Handle Tool Calls
     if (responseMessage.tool_calls) {
-      messages.push(responseMessage); // Add assistant's tool request to history
-
+      messages.push(responseMessage);
       for (const toolCall of responseMessage.tool_calls) {
         const fnName = toolCall.function.name;
         const fnArgs = JSON.parse(toolCall.function.arguments);
-        
-        console.log(`[Tool] Executing ${fnName}...`);
-        
         const toolOutput = await availableTools[fnName](fnArgs);
-
+        
         messages.push({
           tool_call_id: toolCall.id,
           role: "tool",
@@ -108,98 +156,86 @@ async function generateResponse(messages, chatId) {
           content: toolOutput,
         });
       }
-
-      // 3. Second Call to Groq (With tool results)
       const secondResponse = await groq.chat.completions.create({
         messages: messages,
         model: MODEL_ID,
       });
-      
       finalContent = secondResponse.choices[0].message.content;
     }
 
-    // 4. Send Response
     if (finalContent) {
       await bot.telegram.sendMessage(chatId, finalContent);
       await DB.addMessage('assistant', finalContent);
+      
+      // --- DIARY TRIGGER CHECK ---
+      // Increment count after bot speaks
+      DB.incrementInteractionCount();
+      
+      // Check if we reached 20
+      const stats = await DB.getAffinity();
+      if (stats.interaction_count >= 20) {
+        // Trigger diary writing (no await, let it run in background)
+        writeDiaryEntry(stats.affinity);
+      }
     }
-
   } catch (error) {
-    console.error("Groq Generation Error:", error);
-    // Silent fail or notify user depending on preference
+    console.error("Gen Error:", error);
   }
 }
 
-// --- EVENT: USER MESSAGE (TEXT OR PHOTO) ---
+// --- USER MESSAGE HANDLER ---
 bot.on(['text', 'photo'], async (ctx) => {
-  const chatId = ctx.chat.id;
-
-  // --- SECURITY CHECK (START) ---
+  // Security Check
   const incomingUserId = String(ctx.from.id);
   const allowedId = process.env.ALLOWED_USER_ID;
+  if (allowedId && incomingUserId !== allowedId) return;
 
-  // If the ID doesn't match, stop immediately.
-  if (allowedId && incomingUserId !== allowedId) {
-    console.log(`[Security] Blocked access attempt from User ID: ${incomingUserId}`);
-    return; // Do nothing. The bot stays silent.
-  }
-  // --- SECURITY CHECK (END) ---
-
-  // 1. Extract Content (Text & Image URL)
+  const chatId = ctx.chat.id;
+  
   let userText = ctx.message.text || ctx.message.caption || "";
   let imageUrl = null;
 
   if (ctx.message.photo) {
-    // Get largest available photo
-    const photoArray = ctx.message.photo;
-    const largestPhoto = photoArray[photoArray.length - 1];
+    const largestPhoto = ctx.message.photo[ctx.message.photo.length - 1];
     try {
       const linkDetails = await ctx.telegram.getFileLink(largestPhoto.file_id);
       imageUrl = linkDetails.href;
-    } catch (e) {
-      console.error("Failed to fetch image link:", e);
-    }
+    } catch (e) {}
   }
 
-  // 2. Update DB State
   DB.setChatId(chatId);
-  DB.updateStreak(0); // Reset autonomous streak
-  await DB.setBusyUntil(null); // Clear busy status
+  DB.updateStreak(0);
+  await DB.setBusyUntil(null);
 
-  // 3. Check for Sleep Context
   const lastMsg = await DB.getLastMessage();
   let sleepContext = "";
   if (lastMsg) {
     const lastDate = new Date(lastMsg.timestamp + "Z");
     const now = new Date();
     const hoursDiff = (now - lastDate) / (1000 * 60 * 60);
-    // If silence > 6h and it's daytime (10am+), assume sleep
     if (hoursDiff > 6 && now.getHours() >= 10) {
-      sleepContext = "NOTE: User just returned after a long silence (likely sleep). Welcome them back.";
+      sleepContext = "NOTE: User replied after a long silence (likely sleep).";
     }
   }
 
-  // 4. Save to Database (Text Representation Only)
-  // We store a text marker for images so history remains lightweight
-  const storedContent = imageUrl 
-    ? `[User sent an image] ${userText}` 
-    : userText;
-  
+  const storedContent = imageUrl ? `[User sent an image] ${userText}` : userText;
   await DB.addMessage('user', storedContent);
+  
+  // Increment count after user speaks
+  DB.incrementInteractionCount();
 
-  // 5. Prepare Payload for Groq
+  // Load Context
   const recentHistory = await DB.getRecentHistory();
   const userStats = await DB.getAffinity();
+  const diaryEntries = await DB.getRecentDiaryEntries(); // NEW: Fetch Diary
 
   const systemMessage = { 
     role: "system", 
-    content: getSystemPrompt(userStats.affinity, sleepContext) 
+    content: getSystemPrompt(userStats.affinity, diaryEntries, sleepContext) 
   };
 
-  // Convert DB history to standard message objects
   const historyMessages = recentHistory.map(m => ({ role: m.role, content: m.content }));
-
-  // Create CURRENT message object (Multimodal if image exists)
+  
   let currentMessage;
   if (imageUrl) {
     currentMessage = {
@@ -213,93 +249,59 @@ bot.on(['text', 'photo'], async (ctx) => {
     currentMessage = { role: "user", content: userText };
   }
 
-  // Combine: System + History (minus the text-entry we just saved) + Current (Rich)
-  // We remove the last entry of historyMessages because it contains the text-only version 
-  // of the message we are about to send in 'currentMessage'
   const historyForContext = historyMessages.slice(0, -1);
-
-  const finalMessages = [
-    systemMessage,
-    ...historyForContext,
-    currentMessage
-  ];
+  const finalMessages = [ systemMessage, ...historyForContext, currentMessage ];
 
   await generateResponse(finalMessages, chatId);
 });
 
-// --- AUTONOMOUS LOOP (Run every 60s) ---
+// --- AUTONOMOUS LOOP ---
 setInterval(async () => {
   const now = new Date();
   const currentHour = now.getHours();
 
-  // 1. Quiet Hours (00:00 - 10:00)
   if (currentHour >= 0 && currentHour < 10) return;
 
   const lastMsg = await DB.getLastMessage();
   const stats = await DB.getAffinity();
-
-  // Validate state
-  if (!lastMsg || !stats.chat_id) return;
   
-  // Check Busy Status
-  if (stats.busy_until) {
-    if (now < new Date(stats.busy_until)) return; // Still busy
-  }
+  if (!lastMsg || !stats.chat_id) return;
+  if (stats.busy_until && now < new Date(stats.busy_until)) return;
 
-  // 2. Autonomous Trigger Logic
-  // Only trigger if WE (Assistant) sent the last message and user hasn't replied
   if (lastMsg.role === 'assistant') {
     const lastMsgTime = new Date(lastMsg.timestamp + "Z");
     const diffMinutes = (now - lastMsgTime) / (1000 * 60);
 
-    // If 10 minutes have passed
     if (diffMinutes >= 10) {
-      
-      // Streak Check (Max 3 unreplied messages)
       if (stats.msg_streak >= 3) {
-        // Exception: Morning Reset (if > 8 hours passed, assume new day)
-        if (diffMinutes > 480) {
-          await DB.updateStreak(0);
-        } else {
-          return; // Stop annoying the user
-        }
+        if (diffMinutes > 480) await DB.updateStreak(0); 
+        else return; 
       }
 
-      // Generate Context
-      let autonomyPrompt = "The user hasn't replied in over 10 minutes.";
+      let autonomyPrompt = "User hasn't replied in 10 mins.";
       const eventContext = getSpecialEventContext();
-
-      // Morning Trigger (First message after 10am with long gap)
       if (currentHour >= 10 && diffMinutes > 400) {
-        autonomyPrompt = "It is now past 10 AM. Send a morning greeting.";
-        if (eventContext) autonomyPrompt += " MENTION THE SPECIAL DATE TODAY.";
+        autonomyPrompt = "Morning trigger.";
+        if (eventContext) autonomyPrompt += " MENTION DATE.";
       } else {
-        autonomyPrompt += " Send a short check-in message.";
+        autonomyPrompt += " Check in.";
       }
-
-      console.log(`[Autonomous] Triggering. Streak: ${stats.msg_streak + 1}`);
 
       const recentHistory = await DB.getRecentHistory();
+      const diaryEntries = await DB.getRecentDiaryEntries(); // NEW: Fetch Diary
+
       const messages = [
-        { role: "system", content: getSystemPrompt(stats.affinity, autonomyPrompt) },
+        { role: "system", content: getSystemPrompt(stats.affinity, diaryEntries, autonomyPrompt) },
         ...recentHistory.map(m => ({ role: m.role, content: m.content }))
       ];
 
       await generateResponse(messages, stats.chat_id);
-      
-      // Increment streak
       DB.updateStreak(stats.msg_streak + 1);
     }
   }
 }, 60 * 1000);
 
-// --- STARTUP ---
-bot.launch().then(() => {
-  console.log(`Nano is Online 🟢 | Model: ${MODEL_ID}`);
-}).catch((err) => {
-  console.error("Failed to launch bot:", err);
-});
-
-// Graceful Stop
+// --- START ---
+bot.launch().then(() => console.log(`Nano Online 🟢 | Model: ${MODEL_ID}`));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
