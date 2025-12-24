@@ -124,7 +124,7 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   2. **Search:** Use 'google_search' for news/facts.
   3. **Busy:** Use 'set_busy_status' if user leaves.
   4. **Memory:** Use 'recall_past_interactions' for past history.
-  5. **Affinity:** Use 'update_emotional_state' for compliments/insults.
+  5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you. CHANGE MUST BE EXACTLY 1, -1, or 0.
 
   ⚠️ TOOL USAGE PROTOCOL (CRITICAL):
   - **DO NOT** write JSON or code blocks in your response text. 
@@ -135,26 +135,59 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
 };
 
 
-// --- GENERATE RESPONSE ---
+// --- UPDATED GENERATE RESPONSE ---
 async function generateResponse(messages, chatId) {
   try {
+    // 1. Call Groq with lower temperature for stability
     const completion = await groq.chat.completions.create({
       messages: messages,
       model: MODEL_ID,
       tools: toolsDefinition,
       tool_choice: "auto",
+      temperature: 0.6, // Lowered from default (1.0) to reduce hallucinations
     });
 
     const responseMessage = completion.choices[0].message;
-    let finalContent = responseMessage.content;
+    let finalContent = responseMessage.content || "";
 
+    // --- SANITIZER: Catch hallucinated JSON in text ---
+    // The regex looks for a JSON-like object structure at the end of the text
+    const jsonPattern = /(\{\s*"name":\s*"[\w_]+",\s*"parameters":\s*\{[\s\S]*?\}\s*\})/;
+    const match = finalContent.match(jsonPattern);
+
+    if (match) {
+      console.log("[Sanitizer] Caught hallucinated tool call in text. Fixing...");
+      const jsonStr = match[0];
+      
+      // 1. Remove the JSON from the text shown to the user
+      finalContent = finalContent.replace(jsonStr, "").trim();
+
+      // 2. Attempt to execute the tool manually
+      try {
+        const rawCall = JSON.parse(jsonStr);
+        if (availableTools[rawCall.name]) {
+          console.log(`[Sanitizer] Manually executing: ${rawCall.name}`);
+          // Execute but don't feed back to LLM to avoid loop, just save side effects
+          await availableTools[rawCall.name](rawCall.parameters);
+        }
+      } catch (err) {
+        console.error("[Sanitizer] Failed to parse/run hallucinated tool:", err);
+      }
+    }
+    // --------------------------------------------------
+
+    // 2. Handle REAL Tool Calls (The correct way)
     if (responseMessage.tool_calls) {
-      messages.push(responseMessage);
+      messages.push(responseMessage); 
+
       for (const toolCall of responseMessage.tool_calls) {
         const fnName = toolCall.function.name;
         const fnArgs = JSON.parse(toolCall.function.arguments);
-        const toolOutput = await availableTools[fnName](fnArgs);
         
+        console.log(`[Tool] Executing ${fnName}...`);
+        
+        const toolOutput = await availableTools[fnName](fnArgs);
+
         messages.push({
           tool_call_id: toolCall.id,
           role: "tool",
@@ -162,33 +195,34 @@ async function generateResponse(messages, chatId) {
           content: toolOutput,
         });
       }
+
+      // 3. Second Call to Groq
       const secondResponse = await groq.chat.completions.create({
         messages: messages,
         model: MODEL_ID,
+        temperature: 0.6, // Keep temp low
       });
+      
       finalContent = secondResponse.choices[0].message.content;
     }
 
+    // 4. Send Response
     if (finalContent) {
       await bot.telegram.sendMessage(chatId, finalContent);
       await DB.addMessage('assistant', finalContent);
-      
-      // --- DIARY TRIGGER CHECK ---
-      // Increment count after bot speaks
+
+      // Diary Logic
       DB.incrementInteractionCount();
-      
-      // Check if we reached 20
       const stats = await DB.getAffinity();
       if (stats.interaction_count >= 20) {
-        // Trigger diary writing (no await, let it run in background)
         writeDiaryEntry(stats.affinity);
       }
     }
+
   } catch (error) {
-    console.error("Gen Error:", error);
+    console.error("Groq Generation Error:", error);
   }
 }
-
 // --- USER MESSAGE HANDLER ---
 bot.on(['text', 'photo'], async (ctx) => {
   // Security Check
