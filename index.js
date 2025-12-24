@@ -68,11 +68,10 @@ const getSystemPrompt = (affinity, extraContext = "") => {
   ${extraContext}
   
   INSTRUCTIONS:
-  1. **Internet Search:** Use 'google_search' for unknown facts/news.
-  2. **Busy Status:** Use 'set_busy_status' if the user mentions going to do an activity (gaming, working, etc).
-  3. **Memory:** Use 'recall_past_interactions' if the user asks about the past.
-  4. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you.
-  5. **Vision:** If an image is provided, analyze it based on the user's text.
+  1. **VISION CAPABILITY:** YOU HAVE FULL VISION CAPABILITIES. If the user sends an image, you can see it perfectly.
+  3. **Busy Status:** If the user mentions going to do an activity, USE 'set_busy_status'.
+  4. **Memory:** Use 'recall_past_interactions' if the user asks about the past.
+  5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you.
   `;
 };
 
