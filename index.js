@@ -135,6 +135,17 @@ async function generateResponse(messages, chatId) {
 bot.on(['text', 'photo'], async (ctx) => {
   const chatId = ctx.chat.id;
 
+  // --- SECURITY CHECK (START) ---
+  const incomingUserId = String(ctx.from.id);
+  const allowedId = process.env.ALLOWED_USER_ID;
+
+  // If the ID doesn't match, stop immediately.
+  if (allowedId && incomingUserId !== allowedId) {
+    console.log(`[Security] Blocked access attempt from User ID: ${incomingUserId}`);
+    return; // Do nothing. The bot stays silent.
+  }
+  // --- SECURITY CHECK (END) ---
+
   // 1. Extract Content (Text & Image URL)
   let userText = ctx.message.text || ctx.message.caption || "";
   let imageUrl = null;
