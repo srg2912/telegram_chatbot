@@ -47,7 +47,7 @@ module.exports = {
   },
   getRecentHistory: () => {
     return new Promise((resolve, reject) => {
-      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 20', (err, rows) => { 
+      db.all('SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT 15', (err, rows) => { 
         if (err) reject(err); else resolve(rows.reverse()); 
       });
     });
@@ -128,7 +128,7 @@ module.exports = {
   getRecentDiaryEntries: () => {
     return new Promise((resolve, reject) => {
       // Get last 10 entries
-      db.all('SELECT content, timestamp FROM diary_entries ORDER BY id DESC LIMIT 10', (err, rows) => {
+      db.all('SELECT content, timestamp FROM diary_entries ORDER BY id DESC LIMIT 5', (err, rows) => {
         if (err) reject(err); 
         else resolve(rows.reverse()); // Oldest to newest
       });

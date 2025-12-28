@@ -5,6 +5,21 @@ const Groq = require('groq-sdk');
 const DB = require('./database');
 const { toolsDefinition, availableTools } = require('./tools');
 
+// --- LOAD PERSONALITY FILES ---
+let personalityCore = "";
+let personalityFull = "";
+
+try {
+  // The 'Lite' version for chatting (Low Token)
+  personalityCore = fs.readFileSync('./personality_core.txt', 'utf8');
+  // The 'Rich' version for internal thought/diary (High Token)
+  personalityFull = fs.readFileSync('./personality_full.txt', 'utf8');
+} catch (err) {
+  console.error("Error loading personality files. Using defaults.");
+  personalityCore = "You are Nano, a helpful assistant.";
+  personalityFull = personalityCore;
+}
+
 // --- SETUP ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -55,14 +70,16 @@ async function writeDiaryEntry(affinity) {
       role: "system",
       content: `You are Nano. You are writing in your private diary.
       
-      Personality: ${personalityText}
-      Current Affinity with User: ${affinity}.
+      // USE THE FULL, RICH PERSONALITY HERE
+      PERSONALITY DEPTH:
+      ${personalityFull}
       
-      Task: Write a SHORT, subjective diary entry (2-3 sentences) about your recent interactions with the user.
-      - Be honest about how you feel.
-      - Are you annoyed? Happy? Bored?
-      - Mention specific things the user said.
-      - Do NOT address the user. This is for YOU only.`
+      Current Affinity: ${affinity}.
+      
+      Task: Write a SHORT, subjective diary entry (2-3 sentences) about recent interactions.
+      - Be honest, introspective, and emotional.
+      - Use your full personality traits.
+      - Do NOT address the user.`
     },
     {
       role: "user",
@@ -91,46 +108,37 @@ async function writeDiaryEntry(affinity) {
 // --- UPDATED SYSTEM PROMPT ---
 // Now accepts 'diaryEntries' as an argument
 const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
+  // 1. Simplified Tone Logic (Saves ~20 tokens)
   let tone = "neutral";
-  if (affinity > 50) tone = "loving, enthusiastic, and affectionate";
-  else if (affinity > 20) tone = "warm and friendly";
-  else if (affinity < -50) tone = "hostile, short, and annoyed";
-  else if (affinity < -10) tone = "cold and distant";
+  if (affinity > 50) tone = "loving";
+  else if (affinity > 20) tone = "warm";
+  else if (affinity < -50) tone = "annoyed";
+  else if (affinity < -10) tone = "cold";
 
   const eventContext = getSpecialEventContext();
   
+  // 2. Compact Diary (Saves tokens on formatting)
   const diaryContext = diaryEntries.length > 0 
-    ? `YOUR PRIVATE DIARY (Last 10 entries - Internal monologue):\n${diaryEntries.map(e => `- [${e.timestamp}] ${e.content}`).join('\n')}`
-    : "No diary entries yet.";
+    ? `DIARY (Internal Thoughts):\n${diaryEntries.map(e => `-${e.content}`).join('\n')}`
+    : "";
 
+  // 3. Ultra-Concise Instructions
   return `
-  ${personalityText}
-
-  CURRENT STATUS:
-  - Affinity: ${affinity} (-100 to 100).
-  - Tone: ${tone}.
-  - Date: ${new Date().toDateString()}.
+  ID: ${personalityCore}
   
-  ${diaryContext}
-
-  SPECIAL EVENTS:
+  STATE: Affinity ${affinity}/100 | Tone: ${tone} | Date: ${new Date().toDateString()}
   ${eventContext}
-  
-  CONTEXT NOTES:
+  ${diaryContext}
   ${extraContext}
   
-  INSTRUCTIONS:
-  1. **VISION:** YOU HAVE FULL VISION. If sent an image, analyze it.
-  2. **Search:** Use 'google_search' for news/facts.
-  3. **Busy:** Use 'set_busy_status' if user leaves.
-  4. **Memory:** Use 'recall_past_interactions' for past history.
-  5. **Affinity:** Use 'update_emotional_state' if the user compliments or insults you. CHANGE MUST BE EXACTLY 1, -1, or 0.
-
-  ⚠️ TOOL USAGE PROTOCOL (CRITICAL):
-  - **DO NOT** write JSON or code blocks in your response text. 
-  - **DO NOT** narrate the tool usage (e.g., do NOT write "*updates database*" or "*sets busy status*"). 
-  - To use a tool, simply trigger the function call silently.
-  - If you use a tool, do not output text in the same turn unless necessary.
+  TOOLS:
+  - 'google_search': News/facts.
+  - 'set_busy_status': If user leaves.
+  - 'recall_past_interactions': Memory. Use keywords possibly related to past message.
+  - 'update_emotional_state': React to compliment/insult (+1/-1).
+  - Vision: Analyze images if provided.
+  
+  Response Style: Concise, conversational Telegram messages.
   `;
 };
 

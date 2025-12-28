@@ -17,4 +17,5 @@ npm-debug.log
 build/
 dist/
 
-personality.txt
+personality_full.txt
+personality_core.txt
