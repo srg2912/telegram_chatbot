@@ -4,6 +4,7 @@ const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
 const DB = require('./database');
 const { toolsDefinition, availableTools } = require('./tools');
+const { logDebug } = require('./logger'); // [LOG] Import Logger
 
 // --- LOAD PERSONALITY FILES ---
 let personalityCore = "";
@@ -59,6 +60,7 @@ const getSpecialEventContext = () => {
 // --- HELPER: DIARY GENERATOR ---
 // This runs in the background when interaction count hits 20
 async function writeDiaryEntry(affinity) {
+  logDebug("SYSTEM", "Triggering Diary Write..."); 
   console.log("[Diary] Writing new entry...");
   const recentHistory = await DB.getRecentHistory(); // Get context
   
@@ -98,7 +100,7 @@ async function writeDiaryEntry(affinity) {
     if (entry) {
       DB.addDiaryEntry(entry);
       DB.resetInteractionCount();
-      console.log(`[Diary] Saved: "${entry}"`);
+      logDebug("DIARY_SAVED", entry);
     }
   } catch (err) {
     console.error("[Diary] Failed to write:", err);
@@ -164,6 +166,7 @@ async function generateResponse(messages, chatId) {
     const match = finalContent.match(jsonPattern);
 
     if (match) {
+      logDebug("SANITIZER_TRIGGERED", "Caught hallucinated JSON in text."); 
       console.log("[Sanitizer] Caught hallucinated tool call in text. Fixing...");
       const jsonStr = match[0];
       
@@ -174,7 +177,7 @@ async function generateResponse(messages, chatId) {
       try {
         const rawCall = JSON.parse(jsonStr);
         if (availableTools[rawCall.name]) {
-          console.log(`[Sanitizer] Manually executing: ${rawCall.name}`);
+          logDebug("SANITIZER_EXECUTE", rawCall.name);
           // Execute but don't feed back to LLM to avoid loop, just save side effects
           await availableTools[rawCall.name](rawCall.parameters);
         }
@@ -191,10 +194,14 @@ async function generateResponse(messages, chatId) {
       for (const toolCall of responseMessage.tool_calls) {
         const fnName = toolCall.function.name;
         const fnArgs = JSON.parse(toolCall.function.arguments);
+
+        logDebug("TOOL_EXECUTION", { name: fnName, args: fnArgs });
         
         console.log(`[Tool] Executing ${fnName}...`);
         
         const toolOutput = await availableTools[fnName](fnArgs);
+
+        logDebug("TOOL_OUTPUT", toolOutput); // [LOG]
 
         messages.push({
           tool_call_id: toolCall.id,
@@ -212,6 +219,7 @@ async function generateResponse(messages, chatId) {
       });
       
       finalContent = secondResponse.choices[0].message.content;
+      logDebug("LLM_FINAL_RESPONSE", finalContent);
     }
 
     // 4. Send Response
@@ -228,6 +236,7 @@ async function generateResponse(messages, chatId) {
     }
 
   } catch (error) {
+    logDebug("FATAL_ERROR", error); 
     console.error("Groq Generation Error:", error);
   }
 }
@@ -236,7 +245,10 @@ bot.on(['text', 'photo'], async (ctx) => {
   // Security Check
   const incomingUserId = String(ctx.from.id);
   const allowedId = process.env.ALLOWED_USER_ID;
-  if (allowedId && incomingUserId !== allowedId) return;
+  if (allowedId && incomingUserId !== allowedId) {
+    logDebug("SECURITY", `Blocked ID: ${incomingUserId}`);
+    return;
+  }
 
   const chatId = ctx.chat.id;
   
@@ -250,6 +262,8 @@ bot.on(['text', 'photo'], async (ctx) => {
       imageUrl = linkDetails.href;
     } catch (e) {}
   }
+
+  logDebug("USER_INPUT", { text: userText, hasImage: !!imageUrl });
 
   DB.setChatId(chatId);
   DB.updateStreak(0);
@@ -367,7 +381,7 @@ setInterval(async () => {
         }
       }
 
-      console.log(`[Autonomous] Triggering Streak ${stats.msg_streak}: ${autonomyInstruction}`);
+      logDebug("AUTONOMOUS_TRIGGER", { streak: stats.msg_streak, instruction: autonomyInstruction });
 
       const recentHistory = await DB.getRecentHistory();
       const diaryEntries = await DB.getRecentDiaryEntries();
