@@ -133,7 +133,7 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   
   TOOLS:
   - 'google_search': News/facts.
-  - 'set_busy_status': If user leaves.
+  - 'set_busy_status': If user needs to leave.
   - 'recall_past_interactions': Memory. Use keywords possibly related to past message.
   - 'update_emotional_state': React to compliment/insult (+1/-1).
   - Vision: Analyze images if provided.
@@ -308,6 +308,7 @@ setInterval(async () => {
   const now = new Date();
   const currentHour = now.getHours();
 
+  // 1. Quiet Hours (00:00 - 10:00)
   if (currentHour >= 0 && currentHour < 10) return;
 
   const lastMsg = await DB.getLastMessage();
@@ -316,38 +317,74 @@ setInterval(async () => {
   if (!lastMsg || !stats.chat_id) return;
   if (stats.busy_until && now < new Date(stats.busy_until)) return;
 
+  // 2. Trigger Logic
+  // Only trigger if WE (Assistant) sent the last message
   if (lastMsg.role === 'assistant') {
     const lastMsgTime = new Date(lastMsg.timestamp + "Z");
     const diffMinutes = (now - lastMsgTime) / (1000 * 60);
 
+    // Trigger every 10 minutes of silence
     if (diffMinutes >= 10) {
+      
+      // Stop after 3 autonomous messages
       if (stats.msg_streak >= 3) {
-        if (diffMinutes > 480) await DB.updateStreak(0); 
-        else return; 
+        // Exception: Morning Reset (> 8 hours silence)
+        if (diffMinutes > 480) {
+          await DB.updateStreak(0); 
+          // Reset local variable to 0 so the logic below generates a morning message
+          stats.msg_streak = 0; 
+        } else {
+          return; 
+        }
       }
 
-      let autonomyPrompt = "User hasn't replied in 10 mins.";
-      const eventContext = getSpecialEventContext();
+      // --- NEW INSISTENCE LOGIC ---
+      let autonomyInstruction = "";
+      
+      // Morning Logic (Long silence + past 10 AM)
       if (currentHour >= 10 && diffMinutes > 400) {
-        autonomyPrompt = "Morning trigger.";
-        if (eventContext) autonomyPrompt += " MENTION DATE.";
-      } else {
-        autonomyPrompt += " Check in.";
+        const eventContext = getSpecialEventContext();
+        autonomyInstruction = "TASK: It is a new day. The user slept. Say good morning warmly.";
+        if (eventContext) autonomyInstruction += ` Mention today's special event: ${eventContext}`;
+      } 
+      else {
+        // Progressive Insistence based on Streak
+        // Streak 0 = First message (10 mins passed)
+        // Streak 1 = Second message (20 mins passed)
+        // Streak 2 = Third message (30 mins passed)
+        switch (stats.msg_streak) {
+          case 0:
+            autonomyInstruction = "TASK: 10 minutes have passed and the user hasn't replied. DISREGARD the previous conversation topic. Send a short, casual 'Are you there?' or 'Whatcha doing?' kind of message to check in.";
+            break;
+          case 1:
+            autonomyInstruction = "TASK: 20 minutes have passed. The user is still ignoring you. Be a bit more insistent or curious. Ask if they got busy or distracted.";
+            break;
+          case 2:
+            autonomyInstruction = "TASK: 30 minutes have passed. You are getting bored waiting. Be playful, dramatic, or slightly annoyed (depending on affinity) about being abandoned. This is your last attempt.";
+            break;
+          default:
+            autonomyInstruction = "TASK: Check in on the user.";
+        }
       }
+
+      console.log(`[Autonomous] Triggering Streak ${stats.msg_streak}: ${autonomyInstruction}`);
 
       const recentHistory = await DB.getRecentHistory();
-      const diaryEntries = await DB.getRecentDiaryEntries(); // NEW: Fetch Diary
+      const diaryEntries = await DB.getRecentDiaryEntries();
 
+      // We pass the instruction into 'extraContext' of getSystemPrompt
       const messages = [
-        { role: "system", content: getSystemPrompt(stats.affinity, diaryEntries, autonomyPrompt) },
+        { role: "system", content: getSystemPrompt(stats.affinity, diaryEntries, autonomyInstruction) },
         ...recentHistory.map(m => ({ role: m.role, content: m.content }))
       ];
 
       await generateResponse(messages, stats.chat_id);
+      
+      // Increment streak
       DB.updateStreak(stats.msg_streak + 1);
     }
   }
-}, 60 * 1000);
+}, 60 * 1000); // Check every 60 seconds
 
 // --- START ---
 bot.launch().then(() => console.log(`Nano Online 🟢 | Model: ${MODEL_ID}`));
