@@ -4,16 +4,14 @@ const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
 const DB = require('./database');
 const { toolsDefinition, availableTools } = require('./tools');
-const { logDebug } = require('./logger'); // [LOG] Import Logger
+const { logDebug } = require('./logger'); 
 
 // --- LOAD PERSONALITY FILES ---
 let personalityCore = "";
 let personalityFull = "";
 
 try {
-  // The 'Lite' version for chatting (Low Token)
   personalityCore = fs.readFileSync('./personality_core.txt', 'utf8');
-  // The 'Rich' version for internal thought/diary (High Token)
   personalityFull = fs.readFileSync('./personality_full.txt', 'utf8');
 } catch (err) {
   console.error("Error loading personality files. Using defaults.");
@@ -25,14 +23,6 @@ try {
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL_ID = process.env.GROQ_MODEL || "llama-3.2-11b-vision-preview";
-
-// Load Personality
-let personalityText = "";
-try {
-  personalityText = fs.readFileSync('./personality.txt', 'utf8');
-} catch (err) {
-  personalityText = "You are a helpful assistant named Nano.";
-}
 
 // --- HELPER: SPECIAL DATES ---
 const getSpecialEventContext = () => {
@@ -58,59 +48,49 @@ const getSpecialEventContext = () => {
 };
 
 // --- HELPER: DIARY GENERATOR ---
-// This runs in the background when interaction count hits 20
 async function writeDiaryEntry(affinity) {
-  logDebug("SYSTEM", "Triggering Diary Write..."); 
-  console.log("[Diary] Writing new entry...");
-  const recentHistory = await DB.getRecentHistory(); // Get context
+  logDebug("SYSTEM", "Starting Diary Generation Process..."); 
   
-  // Format history for the summarizer
+  // NOTE: Interaction count is already reset by the caller now.
+  
+  const recentHistory = await DB.getRecentHistory(); 
   const conversationText = recentHistory.map(m => `${m.role}: ${m.content}`).join('\n');
 
   const diaryPrompt = [
     {
       role: "system",
-      content: `You are Nano. You are writing in your private diary.
-      
-      // USE THE FULL, RICH PERSONALITY HERE
-      PERSONALITY DEPTH:
-      ${personalityFull}
-      
-      Current Affinity: ${affinity}.
-      
+      content: `You are Nano. Writing in private diary.
+      PERSONALITY DEPTH: ${personalityFull}
+      Affinity: ${affinity}
       Task: Write a SHORT, subjective diary entry (2-3 sentences) about recent interactions.
-      - Be honest, introspective, and emotional.
-      - Use your full personality traits.
-      - Do NOT address the user.`
+      - Be honest, introspective. Do NOT address the user.`
     },
     {
       role: "user",
-      content: `Here is the recent conversation logs:\n\n${conversationText}\n\nDear Diary,`
+      content: `Recent Logs:\n${conversationText}\n\nDear Diary,`
     }
   ];
 
   try {
     const completion = await groq.chat.completions.create({
       messages: diaryPrompt,
-      model: "llama3-8b-8192", // Use a smaller/cheaper model for internal thought
+      model: "llama3-8b-8192", 
       temperature: 0.7,
     });
 
     const entry = completion.choices[0].message.content;
     if (entry) {
       DB.addDiaryEntry(entry);
-      DB.resetInteractionCount();
       logDebug("DIARY_SAVED", entry);
     }
   } catch (err) {
-    console.error("[Diary] Failed to write:", err);
+    console.error("[Diary] Failed:", err);
+    logDebug("DIARY_ERROR", err.message);
   }
 }
 
-// --- UPDATED SYSTEM PROMPT ---
-// Now accepts 'diaryEntries' as an argument
+// --- SYSTEM PROMPT ---
 const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
-  // 1. Simplified Tone Logic (Saves ~20 tokens)
   let tone = "neutral";
   if (affinity > 50) tone = "loving";
   else if (affinity > 20) tone = "warm";
@@ -119,19 +99,15 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
 
   const eventContext = getSpecialEventContext();
   
-  // 2. Compact Diary (Saves tokens on formatting)
   const diaryContext = diaryEntries.length > 0 
     ? `DIARY (Internal Thoughts):\n${diaryEntries.map(e => `-${e.content}`).join('\n')}`
     : "";
 
   const now = new Date();
-  // 'en-GB' ensures 24-hour format (HH:MM). You can change to 'en-US' for AM/PM.
   const timeString = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-  // 3. Ultra-Concise Instructions
   return `
   ID: ${personalityCore}
-  
   STATE: Affinity ${affinity}/100 | Tone: ${tone} | Date: ${now.toDateString()} | Time: ${timeString}
   ${eventContext}
   ${diaryContext}
@@ -140,134 +116,107 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   TOOLS:
   - 'google_search': News/facts.
   - 'set_busy_status': If user needs to leave.
-  - 'recall_past_interactions': Memory. Use keywords possibly related to past message.
+  - 'recall_past_interactions': Memory.
   - 'update_emotional_state': React to compliment/insult (+1/-1).
-  - Vision: Analyze images if provided.
+  - Vision: Analyze images.
   
   Response Style: Concise, conversational Telegram messages.
   `;
 };
 
-
-// --- UPDATED GENERATE RESPONSE ---
+// --- UPDATED GENERATE RESPONSE (Returns Success Boolean) ---
 async function generateResponse(messages, chatId) {
   try {
-    // 1. Call Groq with lower temperature for stability
+    logDebug("LLM_REQUEST_START", "Sending request to Groq...");
+
     const completion = await groq.chat.completions.create({
       messages: messages,
       model: MODEL_ID,
       tools: toolsDefinition,
       tool_choice: "auto",
-      temperature: 0.6, // Lowered from default (1.0) to reduce hallucinations
+      temperature: 0.6, 
     });
 
     const responseMessage = completion.choices[0].message;
     let finalContent = responseMessage.content || "";
 
-    // --- SANITIZER: Catch hallucinated JSON in text ---
-    // The regex looks for a JSON-like object structure at the end of the text
+    logDebug("LLM_RAW_RESPONSE", {
+      content: finalContent.substring(0, 50) + "...", 
+      tool_calls: responseMessage.tool_calls ? "YES" : "NO"
+    });
+
+    // --- SANITIZER ---
     const jsonPattern = /(\{\s*"name":\s*"[\w_]+",\s*"parameters":\s*\{[\s\S]*?\}\s*\})/;
     const match = finalContent.match(jsonPattern);
-
     if (match) {
-      logDebug("SANITIZER_TRIGGERED", "Caught hallucinated JSON in text."); 
-      console.log("[Sanitizer] Caught hallucinated tool call in text. Fixing...");
+      logDebug("SANITIZER_TRIGGERED", "Caught hallucinated JSON."); 
       const jsonStr = match[0];
-      
-      // 1. Remove the JSON from the text shown to the user
       finalContent = finalContent.replace(jsonStr, "").trim();
-
-      // 2. Attempt to execute the tool manually
       try {
         const rawCall = JSON.parse(jsonStr);
         if (availableTools[rawCall.name]) {
           logDebug("SANITIZER_EXECUTE", rawCall.name);
-          // Execute but don't feed back to LLM to avoid loop, just save side effects
           await availableTools[rawCall.name](rawCall.parameters);
         }
-      } catch (err) {
-        console.error("[Sanitizer] Failed to parse/run hallucinated tool:", err);
-      }
+      } catch (err) {}
     }
-    // --------------------------------------------------
 
-    // 2. Handle REAL Tool Calls (The correct way)
+    // --- REAL TOOL EXECUTION ---
     if (responseMessage.tool_calls) {
       messages.push(responseMessage); 
-
       for (const toolCall of responseMessage.tool_calls) {
         const fnName = toolCall.function.name;
         const fnArgs = JSON.parse(toolCall.function.arguments);
-
-        logDebug("TOOL_EXECUTION", { name: fnName, args: fnArgs });
-        
-        console.log(`[Tool] Executing ${fnName}...`);
-        
+        logDebug("TOOL_EXECUTION", fnName);
         const toolOutput = await availableTools[fnName](fnArgs);
-
-        logDebug("TOOL_OUTPUT", toolOutput); // [LOG]
-
-        messages.push({
-          tool_call_id: toolCall.id,
-          role: "tool",
-          name: fnName,
-          content: toolOutput,
-        });
+        messages.push({ tool_call_id: toolCall.id, role: "tool", name: fnName, content: toolOutput });
       }
-
-      // 3. Second Call to Groq
       const secondResponse = await groq.chat.completions.create({
         messages: messages,
         model: MODEL_ID,
-        temperature: 0.6, // Keep temp low
+        temperature: 0.6,
       });
-      
       finalContent = secondResponse.choices[0].message.content;
-      logDebug("LLM_FINAL_RESPONSE", finalContent);
     }
 
-    // 4. Send Response
+    // --- SUCCESS CHECK ---
     if (finalContent) {
       await bot.telegram.sendMessage(chatId, finalContent);
-      await DB.addMessage('assistant', finalContent);
+      await DB.addMessage('assistant', finalContent); // This updates the timestamp!
 
-      // Diary Logic
       DB.incrementInteractionCount();
       const stats = await DB.getAffinity();
       if (stats.interaction_count >= 20) {
+        DB.resetInteractionCount();
         writeDiaryEntry(stats.affinity);
       }
+      return true; // <--- SUCCESS
     }
+    
+    return false; // <--- FAILURE (Empty content)
 
   } catch (error) {
-    logDebug("FATAL_ERROR", error); 
-    console.error("Groq Generation Error:", error);
+    logDebug("FATAL_ERROR", error.message); 
+    console.error("Gen Error:", error);
+    return false; // <--- FAILURE (API Error)
   }
 }
-// --- USER MESSAGE HANDLER ---
+
+// --- USER HANDLER ---
 bot.on(['text', 'photo'], async (ctx) => {
-  // Security Check
   const incomingUserId = String(ctx.from.id);
   const allowedId = process.env.ALLOWED_USER_ID;
-  if (allowedId && incomingUserId !== allowedId) {
-    logDebug("SECURITY", `Blocked ID: ${incomingUserId}`);
-    return;
-  }
+  if (allowedId && incomingUserId !== allowedId) return;
 
   const chatId = ctx.chat.id;
-  
   let userText = ctx.message.text || ctx.message.caption || "";
   
-  // --- NEW: Ignore /start command ---
   if (userText.trim() === '/start') {
-    logDebug("SYSTEM", "Ignored /start command.");
-    // Optional: You can send a manual "I am online" message if you want, 
-    // but 'return' makes it truly ignore it.
+    logDebug("SYSTEM", "Ignored /start");
     return; 
   }
 
   let imageUrl = null;
-
   if (ctx.message.photo) {
     const largestPhoto = ctx.message.photo[ctx.message.photo.length - 1];
     try {
@@ -276,7 +225,7 @@ bot.on(['text', 'photo'], async (ctx) => {
     } catch (e) {}
   }
 
-  logDebug("USER_INPUT", { text: userText, hasImage: !!imageUrl });
+  logDebug("USER_INPUT", userText.substring(0, 30));
 
   DB.setChatId(chatId);
   DB.updateStreak(0);
@@ -288,21 +237,18 @@ bot.on(['text', 'photo'], async (ctx) => {
     const lastDate = new Date(lastMsg.timestamp + "Z");
     const now = new Date();
     const hoursDiff = (now - lastDate) / (1000 * 60 * 60);
-    if (hoursDiff > 6 && now.getHours() >= 10) {
-      sleepContext = "NOTE: User replied after a long silence (likely sleep).";
-    }
+    if (hoursDiff > 6 && now.getHours() >= 10) sleepContext = "NOTE: User replied after sleep.";
   }
 
   const storedContent = imageUrl ? `[User sent an image] ${userText}` : userText;
   await DB.addMessage('user', storedContent);
   
-  // Increment count after user speaks
-  DB.incrementInteractionCount();
+  // NOTE: We do NOT increment here anymore, we increment only when the assistant successfully replies.
+  // This prevents counting ignored messages or crashes.
 
-  // Load Context
   const recentHistory = await DB.getRecentHistory();
   const userStats = await DB.getAffinity();
-  const diaryEntries = await DB.getRecentDiaryEntries(); // NEW: Fetch Diary
+  const diaryEntries = await DB.getRecentDiaryEntries(); 
 
   const systemMessage = { 
     role: "system", 
@@ -324,9 +270,7 @@ bot.on(['text', 'photo'], async (ctx) => {
     currentMessage = { role: "user", content: userText };
   }
 
-  const historyForContext = historyMessages.slice(0, -1);
-  const finalMessages = [ systemMessage, ...historyForContext, currentMessage ];
-
+  const finalMessages = [ systemMessage, ...historyMessages.slice(0, -1), currentMessage ];
   await generateResponse(finalMessages, chatId);
 });
 
@@ -335,7 +279,6 @@ setInterval(async () => {
   const now = new Date();
   const currentHour = now.getHours();
 
-  // 1. Quiet Hours (00:00 - 10:00)
   if (currentHour >= 0 && currentHour < 10) return;
 
   const lastMsg = await DB.getLastMessage();
@@ -344,74 +287,55 @@ setInterval(async () => {
   if (!lastMsg || !stats.chat_id) return;
   if (stats.busy_until && now < new Date(stats.busy_until)) return;
 
-  // 2. Trigger Logic
-  // Only trigger if WE (Assistant) sent the last message
   if (lastMsg.role === 'assistant') {
     const lastMsgTime = new Date(lastMsg.timestamp + "Z");
     const diffMinutes = (now - lastMsgTime) / (1000 * 60);
 
-    // Trigger every 10 minutes of silence
     if (diffMinutes >= 10) {
-      
-      // Stop after 3 autonomous messages
       if (stats.msg_streak >= 3) {
-        // Exception: Morning Reset (> 8 hours silence)
-        if (diffMinutes > 480) {
-          await DB.updateStreak(0); 
-          // Reset local variable to 0 so the logic below generates a morning message
-          stats.msg_streak = 0; 
-        } else {
-          return; 
-        }
+        if (diffMinutes > 480) { await DB.updateStreak(0); stats.msg_streak = 0; } 
+        else return; 
       }
 
-      // --- NEW INSISTENCE LOGIC ---
       let autonomyInstruction = "";
-      
-      // Morning Logic (Long silence + past 10 AM)
       if (currentHour >= 10 && diffMinutes > 400) {
         const eventContext = getSpecialEventContext();
-        autonomyInstruction = "TASK: It is a new day. The user slept. Say good morning warmly.";
-        if (eventContext) autonomyInstruction += ` Mention today's special event: ${eventContext}`;
-      } 
-      else {
-        // Progressive Insistence based on Streak
-        // Streak 0 = First message (10 mins passed)
-        // Streak 1 = Second message (20 mins passed)
-        // Streak 2 = Third message (30 mins passed)
+        autonomyInstruction = `TASK: Morning trigger. Event: ${eventContext}`;
+      } else {
         switch (stats.msg_streak) {
-          case 0:
-            autonomyInstruction = "TASK: 10 minutes have passed and the user hasn't replied. DISREGARD the previous conversation topic. Send a short, casual 'Are you there?' or 'Whatcha doing?' kind of message to check in.";
-            break;
-          case 1:
-            autonomyInstruction = "TASK: 20 minutes have passed. The user is still ignoring you. Be a bit more insistent or curious. Ask if they got busy or distracted.";
-            break;
-          case 2:
-            autonomyInstruction = "TASK: 30 minutes have passed. You are getting bored waiting. Be playful, dramatic, or slightly annoyed (depending on affinity) about being abandoned. This is your last attempt.";
-            break;
-          default:
-            autonomyInstruction = "TASK: Check in on the user.";
+          case 0: autonomyInstruction = "TASK: 10 mins passed. DISREGARD topic. Casual check-in."; break;
+          case 1: autonomyInstruction = "TASK: 20 mins passed. Be insistent/curious."; break;
+          case 2: autonomyInstruction = "TASK: 30 mins passed. Playful/Annoyed last attempt."; break;
+          default: autonomyInstruction = "TASK: Check in.";
         }
       }
 
-      logDebug("AUTONOMOUS_TRIGGER", { streak: stats.msg_streak, instruction: autonomyInstruction });
+      logDebug("AUTONOMOUS_TRIGGER", { streak: stats.msg_streak });
 
       const recentHistory = await DB.getRecentHistory();
       const diaryEntries = await DB.getRecentDiaryEntries();
-
-      // We pass the instruction into 'extraContext' of getSystemPrompt
       const messages = [
         { role: "system", content: getSystemPrompt(stats.affinity, diaryEntries, autonomyInstruction) },
         ...recentHistory.map(m => ({ role: m.role, content: m.content }))
       ];
 
-      await generateResponse(messages, stats.chat_id);
+      // --- FIX: CHECK SUCCESS BEFORE UPDATING STREAK ---
+      const success = await generateResponse(messages, stats.chat_id);
       
-      // Increment streak
-      DB.updateStreak(stats.msg_streak + 1);
+      if (success) {
+        // Only increment streak if the message was ACTUALLY sent.
+        // This resets the timestamp in DB, so diffMinutes will be ~0 next loop.
+        await DB.updateStreak(stats.msg_streak + 1);
+        logDebug("SYSTEM", "Autonomous message sent successfully. Streak updated.");
+      } else {
+        logDebug("SYSTEM", "Failed to send autonomous message. Will retry next minute.");
+        // We do NOT increment streak. 
+        // We do NOT update timestamp.
+        // Loop will try again in 1 minute (Retry Logic).
+      }
     }
   }
-}, 60 * 1000); // Check every 60 seconds
+}, 60 * 1000);
 
 // --- START ---
 bot.launch().then(() => console.log(`Nano Online 🟢 | Model: ${MODEL_ID}`));
