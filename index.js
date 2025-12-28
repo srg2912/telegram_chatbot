@@ -124,11 +124,15 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
     ? `DIARY (Internal Thoughts):\n${diaryEntries.map(e => `-${e.content}`).join('\n')}`
     : "";
 
+  const now = new Date();
+  // 'en-GB' ensures 24-hour format (HH:MM). You can change to 'en-US' for AM/PM.
+  const timeString = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
   // 3. Ultra-Concise Instructions
   return `
   ID: ${personalityCore}
   
-  STATE: Affinity ${affinity}/100 | Tone: ${tone} | Date: ${new Date().toDateString()}
+  STATE: Affinity ${affinity}/100 | Tone: ${tone} | Date: ${now.toDateString()} | Time: ${timeString}
   ${eventContext}
   ${diaryContext}
   ${extraContext}
@@ -253,6 +257,15 @@ bot.on(['text', 'photo'], async (ctx) => {
   const chatId = ctx.chat.id;
   
   let userText = ctx.message.text || ctx.message.caption || "";
+  
+  // --- NEW: Ignore /start command ---
+  if (userText.trim() === '/start') {
+    logDebug("SYSTEM", "Ignored /start command.");
+    // Optional: You can send a manual "I am online" message if you want, 
+    // but 'return' makes it truly ignore it.
+    return; 
+  }
+
   let imageUrl = null;
 
   if (ctx.message.photo) {
