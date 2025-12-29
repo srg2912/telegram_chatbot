@@ -114,10 +114,10 @@ const getSystemPrompt = (affinity, diaryEntries, extraContext = "") => {
   ${extraContext}
   
   TOOLS:
-  - 'google_search': News/facts.
-  - 'set_busy_status': If user needs to leave.
-  - 'recall_past_interactions': Memory.
-  - 'update_emotional_state': React to compliment/insult (+1/-1).
+  - 'google_search': Search on the internet, you must pass a query.
+  - 'set_busy_status': Call this tool if user needs to leave for a prolongated time (around 2h), you must pass the activity.
+  - 'recall_past_interactions': Query past interactions with the user, you must pass some keywords.
+  - 'update_emotional_state': React to compliment/insult, trigger when you think it's appropiate (must pass +1 or -1).
   - Vision: Analyze images.
   
   Response Style: Concise, conversational Telegram messages.
@@ -180,10 +180,10 @@ async function generateResponse(messages, chatId) {
     }
 
     // --- SUCCESS CHECK ---
-    if (finalContent) {
+    if (finalContent && finalContent.trim().length > 0 && finalContent.trim() !== '...') {
       await bot.telegram.sendMessage(chatId, finalContent);
       await DB.addMessage('assistant', finalContent);
-
+      
       // 1. Increment (Async)
       await DB.incrementInteractionCount();
       
@@ -328,20 +328,17 @@ setInterval(async () => {
         ...recentHistory.map(m => ({ role: m.role, content: m.content }))
       ];
 
-      // --- FIX: CHECK SUCCESS BEFORE UPDATING STREAK ---
       const success = await generateResponse(messages, stats.chat_id);
       
       if (success) {
-        // Only increment streak if the message was ACTUALLY sent.
-        // This resets the timestamp in DB, so diffMinutes will be ~0 next loop.
-        await DB.updateStreak(stats.msg_streak + 1);
-        logDebug("SYSTEM", "Autonomous message sent successfully. Streak updated.");
+        logDebug("SYSTEM", "Autonomous message sent successfully.");
       } else {
-        logDebug("SYSTEM", "Failed to send autonomous message. Will retry next minute.");
-        // We do NOT increment streak. 
-        // We do NOT update timestamp.
-        // Loop will try again in 1 minute (Retry Logic).
+        logDebug("SYSTEM", "Failed to send autonomous message (Model output empty or '...').");
       }
+
+      // CRITICAL FIX: Increment streak REGARDLESS of success.
+      // This prevents the infinite loop. If it failed, we burn one "life" and move on.
+      await DB.updateStreak(stats.msg_streak + 1);
     }
   }
 }, 60 * 1000);
