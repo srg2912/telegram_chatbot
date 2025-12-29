@@ -182,18 +182,27 @@ async function generateResponse(messages, chatId) {
     // --- SUCCESS CHECK ---
     if (finalContent) {
       await bot.telegram.sendMessage(chatId, finalContent);
-      await DB.addMessage('assistant', finalContent); // This updates the timestamp!
+      await DB.addMessage('assistant', finalContent);
 
-      DB.incrementInteractionCount();
+      // 1. Increment (Async)
+      await DB.incrementInteractionCount();
+      
+      // 2. Fetch Stats to check count
       const stats = await DB.getAffinity();
+      
+      // [LOG] Debug the counter to see if it's working
+      logDebug("SYSTEM", `Interaction Count: ${stats.interaction_count} / 20`);
+
       if (stats.interaction_count >= 20) {
-        DB.resetInteractionCount();
+        // Reset immediately
+        await DB.resetInteractionCount();
+        logDebug("SYSTEM", "Limit reached! Resetting count and writing Diary.");
         writeDiaryEntry(stats.affinity);
       }
-      return true; // <--- SUCCESS
+      return true; // Success
     }
     
-    return false; // <--- FAILURE (Empty content)
+    return false;
 
   } catch (error) {
     logDebug("FATAL_ERROR", error.message); 
