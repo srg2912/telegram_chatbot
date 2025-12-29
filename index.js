@@ -22,7 +22,7 @@ try {
 // --- SETUP ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL_ID = process.env.GROQ_MODEL || "llama-3.2-11b-vision-preview";
+const MODEL_ID = process.env.GROQ_MODEL || "meta-llama/llama-4-maverick-17b-128e-instruct";
 
 // --- HELPER: SPECIAL DATES ---
 const getSpecialEventContext = () => {
@@ -74,7 +74,7 @@ async function writeDiaryEntry(affinity) {
   try {
     const completion = await groq.chat.completions.create({
       messages: diaryPrompt,
-      model: "llama3-8b-8192", 
+      model: MODEL_ID, 
       temperature: 0.7,
     });
 
