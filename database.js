@@ -142,7 +142,7 @@ module.exports = {
   // CHANGED: LIMIT 3 (Token Saver)
   getRecentDiaryEntries: () => {
     return new Promise((resolve, reject) => {
-      db.all('SELECT content, timestamp FROM diary_entries ORDER BY id DESC LIMIT 3', (err, rows) => {
+      db.all('SELECT content, timestamp FROM diary_entries ORDER BY id DESC LIMIT 5', (err, rows) => {
         if (err) reject(err); 
         else resolve(rows.reverse());
       });
