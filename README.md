@@ -1,6 +1,6 @@
 # Telegegram ChatBot
 
-A sophisticated, autonomous Telegram companion bot powered by AI through an API. Nano features persistent memory, emotional intelligence (affinity system), autonomous check-ins, diary generation, and tool-augmented conversations.
+A sophisticated, autonomous Telegram companion bot powered by AI through an API. It features persistent memory, emotional intelligence (affinity system), autonomous check-ins, diary generation, and tool-augmented conversations.
 
 ## Features
 
